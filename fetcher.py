@@ -4,7 +4,11 @@ from bs4 import BeautifulSoup
 import urllib.parse
 import json
 
+<<<<<<< HEAD
+client = OpenAI(api_key="")
+=======
 client = OpenAI(api_key="APIKEY")
+>>>>>>> parent of 9db10ed (Enhance Wikipedia company fetcher and add tests)
 
 def guess_wikipedia_search_keywords(website_url):
     """Guess up to 3 search keywords for a company based on its website URL."""
