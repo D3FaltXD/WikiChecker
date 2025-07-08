@@ -494,7 +494,7 @@ def target(company_website):
     return None
 
 if __name__ == "__main__":
-    res = target("edelweissfin.com")
+    res = target("google.com")
     print(json.dumps(res, indent=2))
 
     # Generate plain text report
