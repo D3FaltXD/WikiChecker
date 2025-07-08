@@ -59,7 +59,9 @@ def extract_subsidiaries(soup, company_name=None):
                         name = link.text.strip()
                         href = link['href']
                         if href.startswith("/wiki/") and name:
-                            subsidiaries.append({"name": name, "wiki_url": f"https://en.wikipedia.org{href}"})
+                            wiki_url = f"https://en.wikipedia.org{href}"
+                            print(f"[LINK FOUND] Found Wikipedia link for subsidiary '{name}' in infobox: {wiki_url}")
+                            subsidiaries.append({"name": name, "wiki_url": wiki_url})
                     if not cell.find("a", href=True):
                         text = cell.text.strip()
                         if text and text not in ["—", "-", "None", "N/A"]:
@@ -83,7 +85,11 @@ def extract_subsidiaries(soup, company_name=None):
                     if (link.get("href", "").startswith("/wiki/") and 
                         link.text.strip().lower() == sub_name.lower()):
                         wiki_url = f"https://en.wikipedia.org{link['href']}"
+                        print(f"[LINK FOUND] Found Wikipedia link for subsidiary '{sub_name}': {wiki_url}")
                         break
+                
+                if not wiki_url:
+                    print(f"[NO LINK] No Wikipedia link found for subsidiary '{sub_name}'")
                 
                 subsidiaries.append({"name": sub_name, "wiki_url": wiki_url})
     
@@ -148,7 +154,9 @@ def extract_acquisitions(soup, company_name=None):
                         name = link.text.strip()
                         href = link['href']
                         if href.startswith("/wiki/"):
-                            acquisitions.append({"name": name, "wiki_url": f"https://en.wikipedia.org{href}"})
+                            wiki_url = f"https://en.wikipedia.org{href}"
+                            print(f"[LINK FOUND] Found Wikipedia link for acquisition '{name}' in infobox: {wiki_url}")
+                            acquisitions.append({"name": name, "wiki_url": wiki_url})
                     if not cell.find("a", href=True):
                         text = cell.text.strip()
                         if text:
@@ -156,7 +164,17 @@ def extract_acquisitions(soup, company_name=None):
     if not acquisitions and company_name:
         ai_names = extract_acquisitions_from_description(soup, company_name)
         for name in ai_names:
-            acquisitions.append({"name": name, "wiki_url": None})
+            wiki_url = None
+            # Try to find a Wikipedia link for this acquisition
+            for link in soup.find_all("a", href=True):
+                if (link.get("href", "").startswith("/wiki/") and 
+                    link.text.strip().lower() == name.lower()):
+                    wiki_url = f"https://en.wikipedia.org{link['href']}"
+                    print(f"[LINK FOUND] Found Wikipedia link for acquisition '{name}': {wiki_url}")
+                    break
+            if not wiki_url:
+                print(f"[NO LINK] No Wikipedia link found for acquisition '{name}'")
+            acquisitions.append({"name": name, "wiki_url": wiki_url})
     return acquisitions
 
 def normalize_domain(url):
@@ -297,6 +315,93 @@ def extract_subsidiaries_from_text(soup, company_name):
         print(f"[ERROR] Failed to extract subsidiaries from text: {e}")
         return []
 
+def _normalize_wiki_path(path):
+    """Normalize Wikipedia path for comparison, handling URL encoding and case differences."""
+    if not path:
+        return None
+    
+    # Extract just the path part if it's a full URL
+    if path.startswith('https://') or path.startswith('http://'):
+        try:
+            parsed = urlparse(path)
+            path = parsed.path
+        except:
+            path = '/' + '/'.join(path.split('/', 3)[3:])
+    
+    if not path.startswith('/wiki/'):
+        return None
+    
+    # Get the page name after /wiki/
+    page = path[len('/wiki/'):]
+    if not page:
+        return None
+    
+    # URL decode the page name
+    try:
+        page = urllib.parse.unquote(page)
+    except:
+        pass
+    
+    # Normalize spaces and underscores (Wikipedia treats them the same)
+    page = page.replace('_', ' ').strip()
+    
+    # Wikipedia is case-insensitive for the first character only
+    if page:
+        page = page[0].upper() + page[1:]
+    
+    # Re-encode for consistent comparison
+    page_encoded = urllib.parse.quote(page.replace(' ', '_'))
+    return f'/wiki/{page_encoded}'
+
+def get_linked_entities_with_domains(soup, entity_list):
+    """
+    For each entity in entity_list, only include domain if the entity is hyperlinked in the parent page
+    (link text matches entity name, case-insensitive, and href matches the entity's Wikipedia URL path, normalized).
+    Returns a list of dicts with name, wiki_url, and domain (or None).
+    """
+    result = []
+    # Build a mapping from lowercased link text to hrefs in the parent page
+    link_map = {}
+    for link in soup.find_all("a", href=True):
+        text = link.text.strip().lower()
+        href = link['href']
+        if text:
+            if text not in link_map:
+                link_map[text] = []
+            link_map[text].append(href)
+    for entity in entity_list:
+        name = entity["name"]
+        wiki_url = entity.get("wiki_url")
+        domain = None
+        # Only include domain if the entity is hyperlinked in the parent page with exact name match
+        if wiki_url:
+            entity_name_lc = name.strip().lower()
+            entity_url_path = _normalize_wiki_path(wiki_url)
+            found_link = False
+            if entity_name_lc in link_map and entity_url_path:
+                for href in link_map[entity_name_lc]:
+                    href_norm = _normalize_wiki_path(href)
+                    if href_norm and href_norm == entity_url_path:
+                        found_link = True
+                        break
+            if found_link:
+                try:
+                    resp = requests.get(wiki_url, timeout=10)
+                    resp.raise_for_status()
+                    entity_soup = BeautifulSoup(resp.text, 'html.parser')
+                    website = get_official_website_from_infobox(entity_soup)
+                    if website:
+                        domain = normalize_domain(website)
+                except Exception as e:
+                    print(f"[ERROR] Failed to get domain for entity {name}: {e}")
+                    domain = None
+        result.append({
+            "name": name,
+            "wiki_url": wiki_url,
+            "domain": domain
+        })
+    return result
+
 def target(company_website):
     """
     Given a company website, find the main Wikipedia page, verify it, extract subsidiaries and their domains and acquisitions.
@@ -345,35 +450,43 @@ def target(company_website):
                             for acq_keyword in acq_keywords:
                                 acq_titles = search_wikipedia(acq_keyword)
                                 if acq_titles:
-                                    acq["wiki_url"] = get_wikipedia_page_url(acq_titles[0])
-                                    break
+                                    candidate_url = get_wikipedia_page_url(acq_titles[0])
+                                    # Verify this is actually a page about the entity, not the parent company
+                                    if candidate_url != url:  # Don't assign parent company's URL to subsidiary/acquisition
+                                        candidate_title = acq_titles[0].lower()
+                                        entity_name = acq["name"].lower()
+                                        # Simple check: entity name should be in the page title
+                                        if any(word in candidate_title for word in entity_name.split() if len(word) > 2):
+                                            acq["wiki_url"] = candidate_url
+                                            print(f"[INFO] Found Wikipedia page for {acq['name']}: {candidate_url}")
+                                            break
+                                        else:
+                                            print(f"[INFO] Wikipedia page '{acq_titles[0]}' doesn't seem to be about '{acq['name']}'")
+                                    else:
+                                        print(f"[INFO] Skipping parent company URL for acquisition '{acq['name']}'")
                         except Exception as e:
                             print(f"[ERROR] Failed to find Wikipedia for acquisition {acq['name']}: {e}")
                 
-                result = {"main_domain": main_domain, "wikipedia_url": url, "subsidiaries": [], "acquisitions": acquisitions}
+                # Only include domain if the entity is hyperlinked in the parent page and its Wikipedia page has an official website
+                subsidiaries_with_domains = get_linked_entities_with_domains(soup, subsidiaries)
+                acquisitions_with_domains = get_linked_entities_with_domains(soup, acquisitions)
                 
-                # Process subsidiaries and get their domains
-                for sub in subsidiaries:
-                    sub_domain = None
-                    if sub["wiki_url"]:
-                        try:
-                            print(f"[INFO] Fetching domain for subsidiary: {sub['name']}")
-                            sub_resp = requests.get(sub["wiki_url"], timeout=10)
-                            sub_resp.raise_for_status()
-                            sub_soup = BeautifulSoup(sub_resp.text, 'html.parser')
-                            sub_website = get_official_website_from_infobox(sub_soup)
-                            if sub_website:
-                                sub_domain = normalize_domain(sub_website)
-                        except Exception as e:
-                            print(f"[ERROR] Failed to get domain for subsidiary {sub['name']}: {e}")
-                            sub_domain = None
-                    
-                    sub_entry = {
+                result = {"main_domain": main_domain, "wikipedia_url": url, "subsidiaries": [], "acquisitions": []}
+                
+                for sub in subsidiaries_with_domains:
+                    result["subsidiaries"].append({
                         "name": sub["name"],
-                        "domain": sub_domain,
-                        "relation": f"subsidiary of {main_domain}"
-                    }
-                    result["subsidiaries"].append(sub_entry)
+                        "domain": sub["domain"],
+                        "relation": f"subsidiary of {main_domain}",
+                        "wiki_url": sub.get("wiki_url")
+                    })
+                
+                for acq in acquisitions_with_domains:
+                    result["acquisitions"].append({
+                        "name": acq["name"],
+                        "domain": acq["domain"],
+                        "wiki_url": acq.get("wiki_url")
+                    })
                 
                 return result
     
@@ -381,5 +494,38 @@ def target(company_website):
     return None
 
 if __name__ == "__main__":
-    res = target("https://www.nvidia.com")
+    res = target("edelweissfin.com")
     print(json.dumps(res, indent=2))
+
+    # Generate plain text report
+    def quote(s):
+        return f'"{s}"' if s is not None else '""'
+
+    if res:
+        lines = []
+        lines.append(f"Main domain: {quote(res['main_domain'])}")
+        lines.append(f"Wikipedia URL: {quote(res['wikipedia_url'])}")
+        lines.append("")
+        lines.append("Subsidiaries:")
+        if res["subsidiaries"]:
+            for sub in res["subsidiaries"]:
+                lines.append(f"  - Name: {quote(sub['name'])}")
+                lines.append(f"    Domain: {quote(sub['domain'])}")
+                lines.append(f"    Wikipedia: {quote(sub['wiki_url'])}")
+        else:
+            lines.append("  (none)")
+        lines.append("")
+        lines.append("Acquisitions:")
+        if res["acquisitions"]:
+            for acq in res["acquisitions"]:
+                lines.append(f"  - Name: {quote(acq['name'])}")
+                lines.append(f"    Domain: {quote(acq.get('domain'))}")
+                lines.append(f"    Wikipedia: {quote(acq.get('wiki_url'))}")
+        else:
+            lines.append("  (none)")
+        report = "\n".join(lines)
+        print("\n--- TEXT REPORT ---\n" + report)
+        with open("report.txt", "w", encoding="utf-8") as f:
+            f.write(report)
+    else:
+        print("No result to report.")

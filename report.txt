@@ -1,0 +1,21 @@
+Main domain: "edelweissfin.com"
+Wikipedia URL: "https://en.wikipedia.org/wiki/Edelweiss_Group"
+
+Subsidiaries:
+  - Name: "Edelweiss Tokio Life Insurance Company LimitedEdelweiss Asset Management Ltd"
+    Domain: ""
+    Wikipedia: ""
+  - Name: "Rooshnil Securities"
+    Domain: ""
+    Wikipedia: ""
+
+Acquisitions:
+  - Name: "Rooshnil Securities"
+    Domain: ""
+    Wikipedia: ""
+  - Name: "Anagram Capital"
+    Domain: ""
+    Wikipedia: ""
+  - Name: "Forefront Capital Management"
+    Domain: ""
+    Wikipedia: ""
